@@ -23,4 +23,6 @@ ASYNC_DATABASE_URL: str = _make_async_url(DATABASE_URL)
 WITHDRAW_POINTS_DEFAULT: int = 5
 REWARD_PER_REFERRAL_DEFAULT: int = 1
 RENDER_URL: str = os.getenv("RENDER_URL", "")
-BOT_USERNAME: str = os.getenv("BOT_USERNAME", "")
+
+# Auto-set at startup by main.py via bot.get_me()
+BOT_USERNAME: str = ""

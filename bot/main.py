@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 
-from bot.config import BOT_TOKEN, ADMIN_ID, RENDER_URL
+import bot.config as config
 from bot.database import engine, Base
 from bot.middlewares.db_middleware import DbSessionMiddleware
 from bot.handlers import start, user, admin
@@ -44,12 +44,11 @@ async def start_webserver():
 
 async def keep_alive():
     """Ping self every 10 min to prevent Render free tier sleep."""
-    if not RENDER_URL:
+    if not config.RENDER_URL:
         logger.info("RENDER_URL not set — keep-alive disabled.")
         return
 
-    # RENDER_URL may be just a hostname from fromService
-    base = RENDER_URL if RENDER_URL.startswith("http") else f"https://{RENDER_URL}"
+    base = config.RENDER_URL if config.RENDER_URL.startswith("http") else f"https://{config.RENDER_URL}"
     ping_url = base.rstrip("/") + "/healthz"
     logger.info(f"Keep-alive started → pinging {ping_url} every 10 min.")
 
@@ -67,7 +66,7 @@ async def main():
     await create_tables()
     await start_webserver()
 
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.update.middleware(DbSessionMiddleware())
@@ -78,11 +77,13 @@ async def main():
 
     try:
         bot_info = await bot.get_me()
-        logger.info(f"Starting bot: @{bot_info.username}")
+        # Auto-set username globally — no env var needed
+        config.BOT_USERNAME = bot_info.username or ""
+        logger.info(f"Starting bot: @{config.BOT_USERNAME}")
         await bot.send_message(
-            ADMIN_ID,
+            config.ADMIN_ID,
             f"🤖 <b>Bot Started!</b>\n\n"
-            f"@{bot_info.username} is now online.\n"
+            f"@{config.BOT_USERNAME} is now online.\n"
             f"📱 APK Refer &amp; Earn Bot",
             parse_mode="HTML",
         )
