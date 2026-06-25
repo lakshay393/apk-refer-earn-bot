@@ -7,7 +7,7 @@ services:
     name: apk-refer-earn-bot
     runtime: python
     plan: free
-    buildCommand: pip install --prefer-binary -r requirements.txt
+    buildCommand: pip install --only-binary=pydantic-core,pydantic -r requirements.txt
     startCommand: python run_bot.py
     healthCheckPath: /healthz
     envVars:
