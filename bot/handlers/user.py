@@ -1,3 +1,4 @@
+import bot.config as config
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,6 @@ from bot.keyboards.user_kb import (
     main_menu_kb, apk_list_kb, apk_confirm_kb, back_to_menu_kb, support_kb, join_channels_kb
 )
 from bot.utils.channel_checker import get_missing_channels
-from bot.config import BOT_USERNAME
 
 router = Router()
 
@@ -54,7 +54,8 @@ async def show_profile(message: Message, session: AsyncSession, bot: Bot):
     if not ok:
         return
 
-    ref_link = f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}" if BOT_USERNAME else "Set BOT_USERNAME env var"
+    bot_username = config.BOT_USERNAME
+    ref_link = f"https://t.me/{bot_username}?start={user.telegram_id}" if bot_username else "⚠️ Contact admin"
     join_str = user.join_date.strftime("%d %b %Y") if user.join_date else "N/A"
 
     await message.answer(
@@ -81,7 +82,8 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
     if not ok:
         return
 
-    ref_link = f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}" if BOT_USERNAME else "Set BOT_USERNAME env var"
+    bot_username = config.BOT_USERNAME
+    ref_link = f"https://t.me/{bot_username}?start={user.telegram_id}" if bot_username else "⚠️ Contact admin"
     reward = await get_reward_per_referral(session)
 
     await message.answer(
@@ -90,7 +92,7 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
         f"💎 <b>Earn {reward} Point(s)</b> for every friend you refer!\n\n"
         f"📌 <b>How it works:</b>\n"
         f"  1️⃣ Share your unique referral link\n"
-        f"  2️⃣ Friend joins & completes setup\n"
+        f"  2️⃣ Friend joins &amp; completes setup\n"
         f"  3️⃣ You earn <b>{reward} point(s)</b> instantly\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
@@ -181,23 +183,22 @@ async def apk_confirm(callback: CallbackQuery, session: AsyncSession, bot: Bot):
 
     apk_name, apk_password = result.split("|", 1)
 
+    # Fetch fresh user to get updated points after deduction
+    fresh_user = await get_user(session, callback.from_user.id)
+    remaining = fresh_user.points if fresh_user else 0
+
     await callback.message.edit_text(
         f"🎉 <b>Redemption Successful!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 <b>APK:</b> {apk_name}\n"
+        f"📦 <b>APK Name:</b> {apk_name}\n"
         f"🔑 <b>Password:</b> <code>{apk_password}</code>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💰 <b>Remaining Balance:</b> {user.points - (await _get_apk_cost(session, apk_id))} pts\n\n"
-        f"<i>Screenshot this message — password will not be shown again.</i>",
+        f"💰 <b>Remaining Balance:</b> {remaining} pts\n\n"
+        f"<i>📸 Screenshot this message — password shown only once!</i>",
         parse_mode="HTML",
         reply_markup=back_to_menu_kb(),
     )
     await callback.answer("✅ APK redeemed successfully!")
-
-
-async def _get_apk_cost(session, apk_id: int) -> int:
-    apk = await get_apk(session, apk_id)
-    return apk.point_cost if apk else 0
 
 
 @router.callback_query(F.data == "apk_cancel")
