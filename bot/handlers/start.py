@@ -9,7 +9,6 @@ from bot.services.db_service import (
 )
 from bot.keyboards.user_kb import join_channels_kb, recheck_channels_kb, main_menu_kb
 from bot.utils.channel_checker import get_missing_channels
-from bot.config import ADMIN_ID
 
 router = Router()
 
@@ -26,53 +25,57 @@ async def cmd_start(message: Message, session: AsyncSession, bot: Bot):
         except ValueError:
             ref_id = None
 
+    # NOTE: ref_id is passed here; get_or_create_user only sets it for NEW users
     user, is_new = await get_or_create_user(
         session,
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
-        referred_by=ref_id if is_new else None,
+        referred_by=ref_id,  # db_service ignores this for existing users
     )
 
     if user.blocked:
         await message.answer(
-            "🚫 <b>Access Restricted</b>\n\n"
+            "🚫  <b>Account Suspended</b>\n\n"
             "Your account has been suspended.\n"
-            "Contact support if you believe this is a mistake.",
+            "Contact support if you think this is a mistake.",
             parse_mode="HTML",
         )
         return
 
     channels = await get_all_channels(session)
 
-    # No channels configured — skip force join
+    # No channels configured — skip force join, verify immediately
     if not channels:
         await _send_welcome(message, user, session, bot, ref_id if is_new else None)
         return
 
     # Already verified — just show menu
     if user.verified:
+        name = message.from_user.first_name or "there"
         await message.answer(
-            f"👋 <b>Welcome back, {message.from_user.first_name or 'there'}!</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"👋  <b>Welcome back, {name}!</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Use the menu below to navigate.",
             parse_mode="HTML",
             reply_markup=main_menu_kb(),
         )
         return
 
-    # Check if already in all channels
+    # New/unverified user — check channels
     missing = await get_missing_channels(bot, message.from_user.id, channels)
     if not missing:
-        await _complete_onboarding(message, session, bot, ref_id if is_new else user.referred_by)
+        # Already in all channels — complete onboarding immediately
+        await _complete_onboarding(message, session, bot, ref_id if is_new else None)
         return
 
+    name = message.from_user.first_name or "there"
     await message.answer(
-        f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔐 <b>One quick step before you begin</b>\n\n"
-        f"Join <b>{len(channels)}</b> required channel(s) below,\n"
-        "then tap <b>✅ I've Joined All Channels</b>.",
+        f"👋  <b>Welcome, {name}!</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔐  <b>Step 1 of 1 — Join our channel(s)</b>\n\n"
+        f"Join the {len(channels)} channel(s) below,\n"
+        f"then tap  <b>✅ I've Joined All</b>  to continue.",
         parse_mode="HTML",
         reply_markup=join_channels_kb(channels),
     )
@@ -93,14 +96,14 @@ async def check_join(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     missing = await get_missing_channels(bot, callback.from_user.id, channels)
     if missing:
         await callback.message.edit_text(
-            "⚠️ <b>Channels Not Joined Yet</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"⚠️  <b>Not Joined Yet</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"You still need to join <b>{len(missing)}</b> channel(s).\n"
-            "Join them and tap <b>🔄 Check Again</b>.",
+            f"Join them then tap  <b>🔄 Check Again</b>.",
             parse_mode="HTML",
             reply_markup=recheck_channels_kb(missing),
         )
-        await callback.answer("❌ You haven't joined all channels yet.", show_alert=True)
+        await callback.answer("❌ Still not joined all channels.", show_alert=True)
         return
 
     await _complete_onboarding_callback(callback, session, bot, user.referred_by)
@@ -110,10 +113,9 @@ async def _complete_onboarding(message: Message, session: AsyncSession, bot: Bot
     await mark_user_verified(session, message.from_user.id)
     await _award_referral(session, bot, ref_id, message.from_user.id)
     await message.answer(
-        "✅ <b>Verification Complete!</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎉 Welcome aboard! You're all set.\n\n"
-        "Use the menu below to get started.",
+        "✅  <b>All done! You're verified!</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎉  Welcome aboard! Use the menu below.",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
@@ -122,14 +124,17 @@ async def _complete_onboarding(message: Message, session: AsyncSession, bot: Bot
 async def _complete_onboarding_callback(callback: CallbackQuery, session: AsyncSession, bot: Bot, ref_id: int | None):
     await mark_user_verified(session, callback.from_user.id)
     await _award_referral(session, bot, ref_id, callback.from_user.id)
-    await callback.message.edit_text(
-        "✅ <b>All Channels Joined!</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎉 Welcome! You're all set to use the bot.",
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            "✅  <b>Channels Joined — Verified!</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🎉  Welcome! You're all set.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
     await callback.message.answer(
-        "🏠 <b>Main Menu</b>\n\nSelect an option below to get started.",
+        "🏠  <b>Main Menu</b>\n\nSelect an option below:",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
@@ -140,10 +145,11 @@ async def _send_welcome(message: Message, user, session: AsyncSession, bot: Bot,
     if not user.verified:
         await mark_user_verified(session, message.from_user.id)
         await _award_referral(session, bot, ref_id, message.from_user.id)
+    name = message.from_user.first_name or "there"
     await message.answer(
-        f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎉 You're all set! Use the menu below to explore.",
+        f"👋  <b>Welcome, {name}!</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎉  You're all set! Explore using the menu below.",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
@@ -153,29 +159,21 @@ async def _award_referral(session: AsyncSession, bot: Bot, ref_id: int | None, n
     if not ref_id:
         return
     rewarded = await process_referral(session, ref_id, new_user_id)
-    if rewarded:
-        referrer = await get_user(session, ref_id)
-        if referrer:
-            try:
-                rwd = await get_reward_per_referral(session)
-                await bot.send_message(
-                    ref_id,
-                    f"🎉 <b>Referral Bonus!</b>\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"A new user joined via your link!\n\n"
-                    f"💎 <b>+{rwd} Point(s)</b> added to your balance.\n"
-                    f"🏆 <b>Total Points:</b> {referrer.points}",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-
-@router.callback_query(F.data == "main_menu")
-async def back_to_main_menu(callback: CallbackQuery):
-    await callback.message.answer(
-        "🏠 <b>Main Menu</b>",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb(),
-    )
-    await callback.answer()
+    if not rewarded:
+        return
+    referrer = await get_user(session, ref_id)
+    if not referrer:
+        return
+    try:
+        rwd = await get_reward_per_referral(session)
+        await bot.send_message(
+            ref_id,
+            f"🎉  <b>Referral Bonus!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Someone joined via your link!\n\n"
+            f"💎  <b>+{rwd} Point(s)</b> added to your account.\n"
+            f"🏆  <b>New Balance:</b>  {referrer.points} pts",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass

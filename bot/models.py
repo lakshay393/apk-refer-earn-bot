@@ -70,6 +70,7 @@ class Redemption(Base):
     apk_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("apks.id", ondelete="CASCADE"), nullable=False
     )
+    apk_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
     points_spent: Mapped[int] = mapped_column(Integer, nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
