@@ -3,7 +3,10 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.services.db_service import get_or_create_user, get_all_channels, mark_user_verified, process_referral, get_user
+from bot.services.db_service import (
+    get_or_create_user, get_all_channels, mark_user_verified,
+    process_referral, get_user, get_reward_per_referral
+)
 from bot.keyboards.user_kb import join_channels_kb, recheck_channels_kb, main_menu_kb
 from bot.utils.channel_checker import get_missing_channels
 from bot.config import ADMIN_ID
@@ -28,7 +31,7 @@ async def cmd_start(message: Message, session: AsyncSession, bot: Bot):
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
-        referred_by=ref_id if is_new_ref(ref_id) else None,
+        referred_by=ref_id if is_new else None,
     )
 
     if user.blocked:
@@ -42,10 +45,12 @@ async def cmd_start(message: Message, session: AsyncSession, bot: Bot):
 
     channels = await get_all_channels(session)
 
+    # No channels configured — skip force join
     if not channels:
-        await _send_welcome(message, user.verified, session, bot)
+        await _send_welcome(message, user, session, bot, ref_id if is_new else None)
         return
 
+    # Already verified — just show menu
     if user.verified:
         await message.answer(
             f"👋 <b>Welcome back, {message.from_user.first_name or 'there'}!</b>\n\n"
@@ -56,23 +61,21 @@ async def cmd_start(message: Message, session: AsyncSession, bot: Bot):
         )
         return
 
+    # Check if already in all channels
     missing = await get_missing_channels(bot, message.from_user.id, channels)
     if not missing:
-        await _complete_onboarding(message, session, bot, ref_id)
+        await _complete_onboarding(message, session, bot, ref_id if is_new else user.referred_by)
         return
 
     await message.answer(
         f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "🔐 <b>One quick step before you begin</b>\n\n"
-        f"Join <b>{len(channels)}</b> required channel(s) below, then tap <b>✅ I've Joined All Channels</b>.",
+        f"Join <b>{len(channels)}</b> required channel(s) below,\n"
+        "then tap <b>✅ I've Joined All Channels</b>.",
         parse_mode="HTML",
         reply_markup=join_channels_kb(channels),
     )
-
-
-def is_new_ref(ref_id):
-    return ref_id is not None
 
 
 @router.callback_query(F.data == "check_join")
@@ -93,7 +96,7 @@ async def check_join(callback: CallbackQuery, session: AsyncSession, bot: Bot):
             "⚠️ <b>Channels Not Joined Yet</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"You still need to join <b>{len(missing)}</b> channel(s).\n"
-            "Join them below and tap <b>🔄 Check Again</b>.",
+            "Join them and tap <b>🔄 Check Again</b>.",
             parse_mode="HTML",
             reply_markup=recheck_channels_kb(missing),
         )
@@ -105,25 +108,7 @@ async def check_join(callback: CallbackQuery, session: AsyncSession, bot: Bot):
 
 async def _complete_onboarding(message: Message, session: AsyncSession, bot: Bot, ref_id: int | None):
     await mark_user_verified(session, message.from_user.id)
-    if ref_id:
-        rewarded = await process_referral(session, ref_id, message.from_user.id)
-        if rewarded:
-            referrer = await get_user(session, ref_id)
-            if referrer:
-                try:
-                    rwd = await _get_reward(session)
-                    await bot.send_message(
-                        ref_id,
-                        f"🎉 <b>Referral Bonus!</b>\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"A new user joined via your link!\n\n"
-                        f"💎 <b>+{rwd} Point(s)</b> added to your balance.\n"
-                        f"🏆 Total Points: <b>{referrer.points}</b>",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-
+    await _award_referral(session, bot, ref_id, message.from_user.id)
     await message.answer(
         "✅ <b>Verification Complete!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -136,25 +121,7 @@ async def _complete_onboarding(message: Message, session: AsyncSession, bot: Bot
 
 async def _complete_onboarding_callback(callback: CallbackQuery, session: AsyncSession, bot: Bot, ref_id: int | None):
     await mark_user_verified(session, callback.from_user.id)
-    if ref_id:
-        rewarded = await process_referral(session, ref_id, callback.from_user.id)
-        if rewarded:
-            referrer = await get_user(session, ref_id)
-            if referrer:
-                try:
-                    rwd = await _get_reward(session)
-                    await bot.send_message(
-                        ref_id,
-                        f"🎉 <b>Referral Bonus!</b>\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"A new user joined via your link!\n\n"
-                        f"💎 <b>+{rwd} Point(s)</b> added to your balance.\n"
-                        f"🏆 Total Points: <b>{referrer.points}</b>",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-
+    await _award_referral(session, bot, ref_id, callback.from_user.id)
     await callback.message.edit_text(
         "✅ <b>All Channels Joined!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -169,9 +136,10 @@ async def _complete_onboarding_callback(callback: CallbackQuery, session: AsyncS
     await callback.answer()
 
 
-async def _send_welcome(message: Message, already_verified: bool, session: AsyncSession, bot: Bot):
-    if not already_verified:
+async def _send_welcome(message: Message, user, session: AsyncSession, bot: Bot, ref_id: int | None):
+    if not user.verified:
         await mark_user_verified(session, message.from_user.id)
+        await _award_referral(session, bot, ref_id, message.from_user.id)
     await message.answer(
         f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -181,9 +149,26 @@ async def _send_welcome(message: Message, already_verified: bool, session: Async
     )
 
 
-async def _get_reward(session) -> int:
-    from bot.services.db_service import get_reward_per_referral
-    return await get_reward_per_referral(session)
+async def _award_referral(session: AsyncSession, bot: Bot, ref_id: int | None, new_user_id: int):
+    if not ref_id:
+        return
+    rewarded = await process_referral(session, ref_id, new_user_id)
+    if rewarded:
+        referrer = await get_user(session, ref_id)
+        if referrer:
+            try:
+                rwd = await get_reward_per_referral(session)
+                await bot.send_message(
+                    ref_id,
+                    f"🎉 <b>Referral Bonus!</b>\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"A new user joined via your link!\n\n"
+                    f"💎 <b>+{rwd} Point(s)</b> added to your balance.\n"
+                    f"🏆 <b>Total Points:</b> {referrer.points}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data == "main_menu")

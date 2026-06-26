@@ -91,9 +91,9 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💎 <b>Earn {reward} Point(s)</b> for every friend you refer!\n\n"
         f"📌 <b>How it works:</b>\n"
-        f"  1️⃣ Share your unique referral link\n"
-        f"  2️⃣ Friend joins &amp; completes setup\n"
-        f"  3️⃣ You earn <b>{reward} point(s)</b> instantly\n\n"
+        f"  1️⃣ Share your referral link below\n"
+        f"  2️⃣ Friend joins the bot\n"
+        f"  3️⃣ You earn <b>{reward} point(s)</b> instantly ✅\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
@@ -148,19 +148,21 @@ async def apk_selected(callback: CallbackQuery, session: AsyncSession, bot: Bot)
 
     can_afford = user.points >= apk.point_cost
     status_line = (
-        f"✅ <b>You have enough points!</b>"
+        "✅ <b>You have enough points!</b>"
         if can_afford
-        else f"❌ <b>Insufficient points</b> (need {apk.point_cost - user.points} more)"
+        else f"❌ <b>Insufficient points</b> — need {apk.point_cost - user.points} more"
     )
+    file_note = "📎 Includes APK file" if apk.file_id else "📝 Name + Password"
 
     await callback.message.edit_text(
         f"📦 <b>Confirm Redemption</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🏷 <b>APK:</b> {apk.name}\n"
         f"💎 <b>Cost:</b> {apk.point_cost} pts\n"
+        f"📦 <b>Delivery:</b> {file_note}\n"
         f"💰 <b>Your Balance:</b> {user.points} pts\n\n"
         f"{status_line}\n\n"
-        f"{'Tap ✅ Confirm to redeem instantly.' if can_afford else 'Refer more friends to earn points.'}",
+        f"{'Tap ✅ Confirm to redeem instantly.' if can_afford else 'Refer more friends to earn points!'}",
         parse_mode="HTML",
         reply_markup=apk_confirm_kb(apk_id) if can_afford else back_to_menu_kb(),
     )
@@ -181,23 +183,41 @@ async def apk_confirm(callback: CallbackQuery, session: AsyncSession, bot: Bot):
         await callback.answer(f"❌ {result}", show_alert=True)
         return
 
-    apk_name, apk_password = result.split("|", 1)
+    # result format: "name|password|file_id"
+    parts = result.split("|", 2)
+    apk_name = parts[0]
+    apk_password = parts[1]
+    file_id = parts[2] if len(parts) > 2 else ""
 
-    # Fetch fresh user to get updated points after deduction
+    # Fetch fresh user for updated balance
     fresh_user = await get_user(session, callback.from_user.id)
     remaining = fresh_user.points if fresh_user else 0
 
+    # Edit the message first
     await callback.message.edit_text(
         f"🎉 <b>Redemption Successful!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 <b>APK Name:</b> {apk_name}\n"
+        f"📦 <b>APK:</b> {apk_name}\n"
         f"🔑 <b>Password:</b> <code>{apk_password}</code>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💰 <b>Remaining Balance:</b> {remaining} pts\n\n"
-        f"<i>📸 Screenshot this message — password shown only once!</i>",
+        f"<i>📸 Screenshot this — password shown only once!</i>",
         parse_mode="HTML",
         reply_markup=back_to_menu_kb(),
     )
+
+    # Send the APK file if available
+    if file_id:
+        try:
+            await bot.send_document(
+                callback.from_user.id,
+                document=file_id,
+                caption=f"📱 <b>{apk_name}</b>\n🔑 Password: <code>{apk_password}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
     await callback.answer("✅ APK redeemed successfully!")
 
 
@@ -230,7 +250,7 @@ async def show_history(message: Message, session: AsyncSession, bot: Bot):
         )
         return
 
-    lines = [f"📜 <b>Redemption History</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
+    lines = ["📜 <b>Redemption History</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
     for i, r in enumerate(redemptions[:15], 1):
         date_str = r.date.strftime("%d %b %Y") if r.date else "N/A"
         apk_name = r.apk.name if r.apk else "Deleted APK"

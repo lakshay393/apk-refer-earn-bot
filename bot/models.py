@@ -18,7 +18,11 @@ class User(Base):
     blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    redemptions: Mapped[list["Redemption"]] = relationship("Redemption", back_populates="user", foreign_keys="Redemption.user_telegram_id")
+    redemptions: Mapped[list["Redemption"]] = relationship(
+        "Redemption", back_populates="user",
+        foreign_keys="Redemption.user_telegram_id",
+        cascade="all, delete-orphan",
+    )
 
 
 class Channel(Base):
@@ -46,18 +50,26 @@ class Apk(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     password: Mapped[str] = mapped_column(String(512), nullable=False)
     point_cost: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    redemptions: Mapped[list["Redemption"]] = relationship("Redemption", back_populates="apk")
+    redemptions: Mapped[list["Redemption"]] = relationship(
+        "Redemption", back_populates="apk",
+        cascade="all, delete-orphan",
+    )
 
 
 class Redemption(Base):
     __tablename__ = "redemptions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_telegram_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True)
-    apk_id: Mapped[int] = mapped_column(Integer, ForeignKey("apks.id"), nullable=False)
+    user_telegram_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    apk_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("apks.id", ondelete="CASCADE"), nullable=False
+    )
     points_spent: Mapped[int] = mapped_column(Integer, nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

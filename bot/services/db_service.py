@@ -1,4 +1,4 @@
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.models import User, Channel, Referral, Apk, Redemption, Setting
 from bot.config import REWARD_PER_REFERRAL_DEFAULT, WITHDRAW_POINTS_DEFAULT
@@ -150,19 +150,29 @@ async def get_apk(session: AsyncSession, apk_id: int) -> Apk | None:
     return result.scalar_one_or_none()
 
 
-async def add_apk(session: AsyncSession, name: str, password: str, point_cost: int) -> Apk:
-    apk = Apk(name=name, password=password, point_cost=point_cost, is_active=True)
+async def add_apk(
+    session: AsyncSession,
+    name: str,
+    password: str,
+    point_cost: int,
+    file_id: str | None = None,
+) -> Apk:
+    apk = Apk(name=name, password=password, point_cost=point_cost, file_id=file_id, is_active=True)
     session.add(apk)
     await session.commit()
     return apk
 
 
-async def remove_apk(session: AsyncSession, apk_id: int) -> None:
+async def remove_apk(session: AsyncSession, apk_id: int) -> bool:
     result = await session.execute(select(Apk).where(Apk.id == apk_id))
     apk = result.scalar_one_or_none()
-    if apk:
-        await session.delete(apk)
-        await session.commit()
+    if not apk:
+        return False
+    # Delete related redemptions first (cascade safety)
+    await session.execute(delete(Redemption).where(Redemption.apk_id == apk_id))
+    await session.delete(apk)
+    await session.commit()
+    return True
 
 
 async def set_all_apk_points(session: AsyncSession, points: int) -> int:
@@ -186,7 +196,7 @@ async def redeem_apk(session: AsyncSession, telegram_id: int, apk_id: int) -> tu
         return False, "APK not available."
 
     if user.points < apk.point_cost:
-        return False, f"Insufficient points. You need {apk.point_cost} pts, you have {user.points}."
+        return False, f"Insufficient points. Need {apk.point_cost} pts, you have {user.points}."
 
     user.points -= apk.point_cost
     session.add(Redemption(
@@ -195,7 +205,8 @@ async def redeem_apk(session: AsyncSession, telegram_id: int, apk_id: int) -> tu
         points_spent=apk.point_cost,
     ))
     await session.commit()
-    return True, f"{apk.name}|{apk.password}"
+    # Return name|password|file_id (file_id may be empty string)
+    return True, f"{apk.name}|{apk.password}|{apk.file_id or ''}"
 
 
 async def get_user_redemptions(session: AsyncSession, telegram_id: int) -> list[Redemption]:

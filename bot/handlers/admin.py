@@ -2,7 +2,7 @@ from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, Document
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import ADMIN_ID
@@ -15,7 +15,7 @@ from bot.services.db_service import (
 from bot.keyboards.admin_kb import (
     admin_panel_kb, admin_channels_kb, admin_apk_kb,
     admin_remove_channels_kb, admin_remove_apk_kb,
-    admin_back_kb, admin_broadcast_type_kb
+    admin_back_kb, admin_broadcast_type_kb, admin_skip_kb
 )
 
 router = Router()
@@ -26,13 +26,10 @@ class AdminStates(StatesGroup):
     waiting_apk_name = State()
     waiting_apk_password = State()
     waiting_apk_points = State()
+    waiting_apk_file = State()
     waiting_set_all_pts = State()
     waiting_broadcast_msg = State()
     waiting_broadcast_channel_msg = State()
-
-
-def _apk_temp_store(state_data: dict) -> dict:
-    return state_data
 
 
 # ── Admin Entry ────────────────────────────────────────────────────────────────
@@ -56,10 +53,11 @@ async def cmd_admin(message: Message, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_back")
-async def admin_back(callback: CallbackQuery, session: AsyncSession):
+async def admin_back(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
+    await state.clear()
     stats = await get_stats(session)
     await callback.message.edit_text(
         f"🛡 <b>Admin Panel</b>\n\n"
@@ -129,7 +127,8 @@ async def admin_add_channel_prompt(callback: CallbackQuery, state: FSMContext):
         "Send the channel username or ID.\n\n"
         "<b>Examples:</b>\n"
         "• <code>@mychannel</code>\n"
-        "• <code>-1001234567890</code>",
+        "• <code>-1001234567890</code>\n\n"
+        "<i>Make sure the bot is admin in the channel first!</i>",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
@@ -141,7 +140,10 @@ async def admin_add_channel_receive(message: Message, state: FSMContext, session
     if message.from_user.id != ADMIN_ID:
         return
     await state.clear()
-    raw = message.text.strip()
+    raw = message.text.strip() if message.text else ""
+    if not raw:
+        await message.answer("❌ Please send a valid channel username or ID.", parse_mode="HTML")
+        return
     try:
         if raw.lstrip("-").isdigit():
             chat = await bot.get_chat(int(raw))
@@ -164,8 +166,8 @@ async def admin_add_channel_receive(message: Message, state: FSMContext, session
     except Exception as e:
         await message.answer(
             f"❌ <b>Failed to add channel</b>\n\n"
-            f"Error: {e}\n\n"
-            f"Make sure the bot is an admin in the channel.",
+            f"<code>{e}</code>\n\n"
+            f"<i>Make sure the bot is an admin in the channel.</i>",
             parse_mode="HTML",
             reply_markup=admin_back_kb(),
         )
@@ -198,7 +200,6 @@ async def admin_del_channel(callback: CallbackQuery, session: AsyncSession):
     ch_id = int(callback.data.split("_")[-1])
     await remove_channel(session, ch_id)
     await callback.answer("✅ Channel removed.", show_alert=True)
-    channels = await get_all_channels(session)
     await callback.message.edit_text(
         "📡 <b>Channel Management</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -250,7 +251,7 @@ async def admin_add_apk_prompt(callback: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_apk_name)
     await callback.message.edit_text(
-        "📱 <b>Add New APK — Step 1/3</b>\n\n"
+        "📱 <b>Add New APK — Step 1/4</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Send the <b>APK Name</b>:\n"
         "<i>(e.g. Netflix Premium, Spotify Pro)</i>",
@@ -264,13 +265,16 @@ async def admin_add_apk_prompt(callback: CallbackQuery, state: FSMContext):
 async def admin_apk_name_receive(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    if not message.text:
+        await message.answer("❌ Please send the APK name as text.", parse_mode="HTML")
+        return
     await state.update_data(apk_name=message.text.strip())
     await state.set_state(AdminStates.waiting_apk_password)
     await message.answer(
-        "📱 <b>Add New APK — Step 2/3</b>\n\n"
+        "📱 <b>Add New APK — Step 2/4</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ <b>Name:</b> {message.text.strip()}\n\n"
-        "Now send the <b>APK Password</b>:\n"
+        "Now send the <b>Password</b>:\n"
         "<i>(This will be auto-delivered to users on redemption)</i>",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
@@ -281,14 +285,17 @@ async def admin_apk_name_receive(message: Message, state: FSMContext):
 async def admin_apk_password_receive(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    if not message.text:
+        await message.answer("❌ Please send the password as text.", parse_mode="HTML")
+        return
     await state.update_data(apk_password=message.text.strip())
     await state.set_state(AdminStates.waiting_apk_points)
     data = await state.get_data()
     await message.answer(
-        "📱 <b>Add New APK — Step 3/3</b>\n\n"
+        "📱 <b>Add New APK — Step 3/4</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ <b>Name:</b> {data.get('apk_name')}\n"
-        f"✅ <b>Password:</b> Set\n\n"
+        f"✅ <b>Password:</b> Set ✓\n\n"
         "Now send the <b>Point Cost</b> (number):\n"
         "<i>(e.g. 5 — users need this many points to redeem)</i>",
         parse_mode="HTML",
@@ -297,8 +304,11 @@ async def admin_apk_password_receive(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.waiting_apk_points)
-async def admin_apk_points_receive(message: Message, state: FSMContext, session: AsyncSession):
+async def admin_apk_points_receive(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
+        return
+    if not message.text:
+        await message.answer("❌ Please send a number.", parse_mode="HTML")
         return
     try:
         pts = int(message.text.strip())
@@ -307,17 +317,85 @@ async def admin_apk_points_receive(message: Message, state: FSMContext, session:
     except ValueError:
         await message.answer("❌ Please send a valid positive number.", parse_mode="HTML")
         return
+    await state.update_data(apk_points=pts)
+    await state.set_state(AdminStates.waiting_apk_file)
+    data = await state.get_data()
+    await message.answer(
+        "📱 <b>Add New APK — Step 4/4</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"✅ <b>Name:</b> {data.get('apk_name')}\n"
+        f"✅ <b>Password:</b> Set ✓\n"
+        f"✅ <b>Cost:</b> {pts} pts\n\n"
+        "Now <b>upload the APK file</b> (send as document):\n"
+        "<i>Users will receive this file when they redeem.</i>\n\n"
+        "Or tap <b>⏭ Skip</b> if you only want to deliver name + password.",
+        parse_mode="HTML",
+        reply_markup=admin_skip_kb(),
+    )
+
+
+@router.message(AdminStates.waiting_apk_file, F.document)
+async def admin_apk_file_receive(message: Message, state: FSMContext, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
+        return
     data = await state.get_data()
     await state.clear()
-    apk = await add_apk(session, data["apk_name"], data["apk_password"], pts)
+    file_id = message.document.file_id
+    apk = await add_apk(
+        session,
+        data["apk_name"],
+        data["apk_password"],
+        data["apk_points"],
+        file_id=file_id,
+    )
     await message.answer(
         f"✅ <b>APK Added Successfully!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📦 <b>Name:</b> {apk.name}\n"
         f"🔑 <b>Password:</b> Set ✓\n"
+        f"📎 <b>File:</b> Uploaded ✓\n"
+        f"💎 <b>Cost:</b> {apk.point_cost} pts\n\n"
+        f"<i>Users will receive the file + password on redemption.</i>",
+        parse_mode="HTML",
+        reply_markup=admin_back_kb(),
+    )
+
+
+@router.callback_query(F.data == "admin_skip_file", AdminStates.waiting_apk_file)
+async def admin_apk_skip_file(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    data = await state.get_data()
+    await state.clear()
+    apk = await add_apk(
+        session,
+        data["apk_name"],
+        data["apk_password"],
+        data["apk_points"],
+        file_id=None,
+    )
+    await callback.message.edit_text(
+        f"✅ <b>APK Added (No File)</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 <b>Name:</b> {apk.name}\n"
+        f"🔑 <b>Password:</b> Set ✓\n"
+        f"📎 <b>File:</b> None (name+password only)\n"
         f"💎 <b>Cost:</b> {apk.point_cost} pts",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_apk_file)
+async def admin_apk_file_wrong(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "⚠️ Please upload the APK as a <b>document/file</b>, or tap <b>⏭ Skip</b>.",
+        parse_mode="HTML",
+        reply_markup=admin_skip_kb(),
     )
 
 
@@ -346,8 +424,11 @@ async def admin_del_apk(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Access denied.", show_alert=True)
         return
     apk_id = int(callback.data.split("_")[-1])
-    await remove_apk(session, apk_id)
-    await callback.answer("✅ APK removed.", show_alert=True)
+    removed = await remove_apk(session, apk_id)
+    if removed:
+        await callback.answer("✅ APK removed successfully.", show_alert=True)
+    else:
+        await callback.answer("⚠️ APK not found.", show_alert=True)
     await callback.message.edit_text(
         "📱 <b>APK Manager</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -368,7 +449,8 @@ async def admin_list_apks(callback: CallbackQuery, session: AsyncSession):
         return
     lines = ["📋 <b>All APKs</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
     for apk in apks:
-        lines.append(f"• <b>{apk.name}</b> — 💎 {apk.point_cost} pts")
+        file_status = "📎 File" if apk.file_id else "📝 Name+Pass only"
+        lines.append(f"• <b>{apk.name}</b> — 💎 {apk.point_cost} pts — {file_status}")
     await callback.message.edit_text(
         "\n".join(lines), parse_mode="HTML", reply_markup=admin_apk_kb()
     )
@@ -384,7 +466,7 @@ async def admin_set_all_apk_pts_prompt(callback: CallbackQuery, state: FSMContex
     await callback.message.edit_text(
         "🔁 <b>Set Same Points for All APKs</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Send the <b>point cost</b> to apply to all APKs at once:\n"
+        "Send the <b>point cost</b> to apply to all APKs:\n"
         "<i>(e.g. 5)</i>",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
@@ -400,7 +482,7 @@ async def admin_set_all_apk_pts_receive(message: Message, state: FSMContext, ses
         pts = int(message.text.strip())
         if pts <= 0:
             raise ValueError
-    except ValueError:
+    except (ValueError, AttributeError):
         await message.answer("❌ Please send a valid positive number.", parse_mode="HTML")
         return
     await state.clear()
@@ -426,7 +508,7 @@ async def admin_points(callback: CallbackQuery, session: AsyncSession):
         f"⚙️ <b>Point Settings</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💎 <b>Referral Reward:</b> {reward} pt(s)\n\n"
-        f"<b>Commands:</b>\n"
+        f"<b>Command:</b>\n"
         f"<code>/setreward NUMBER</code> — set points per referral",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
@@ -450,10 +532,7 @@ async def cmd_setreward(message: Message, session: AsyncSession):
         await message.answer("❌ Please provide a positive number.", parse_mode="HTML")
         return
     await set_setting(session, "reward_per_referral", str(val))
-    await message.answer(
-        f"✅ <b>Referral reward set to {val} pt(s)</b>",
-        parse_mode="HTML",
-    )
+    await message.answer(f"✅ <b>Referral reward set to {val} pt(s)</b>", parse_mode="HTML")
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -522,6 +601,8 @@ async def cmd_addpts(message: Message, session: AsyncSession):
         return
     try:
         uid, amount = int(parts[1]), int(parts[2])
+        if amount <= 0:
+            raise ValueError
     except ValueError:
         await message.answer("❌ Invalid parameters.", parse_mode="HTML")
         return
@@ -548,6 +629,8 @@ async def cmd_rmpts(message: Message, session: AsyncSession):
         return
     try:
         uid, amount = int(parts[1]), int(parts[2])
+        if amount <= 0:
+            raise ValueError
     except ValueError:
         await message.answer("❌ Invalid parameters.", parse_mode="HTML")
         return
@@ -604,6 +687,7 @@ async def admin_broadcast_prompt(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
+    await state.clear()
     await callback.message.edit_text(
         "📢 <b>Broadcast</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
